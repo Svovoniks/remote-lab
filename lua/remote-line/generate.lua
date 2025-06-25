@@ -31,7 +31,7 @@ local function get_remote_url()
     return nil
   end
 
-  -- NOTE: Remove the last empty string
+  -- Remove last empty string if exists
   if remote_list[#remote_list] == "" then
     table.remove(remote_list, #remote_list)
   end
@@ -74,55 +74,69 @@ local function github_line_range(firstLine, lastLine)
   end
 end
 
+local function gitlab_line_range(firstLine, lastLine)
+  return "L" .. firstLine .. "-" .. lastLine
+end
+
 local function is_github(remote_url)
   return string.match(remote_url, "github")
 end
 
+local function is_gitlab(remote_url)
+  return string.match(remote_url, "gitlab")
+end
+
+local function normalize_github_url(remote)
+  local rv = remote:gsub("^git@([^:/]*):", "https://%1/")
+  rv = rv:gsub("^ssh://git@", "https://")
+  rv = rv:gsub("%.git$", "")
+  return rv
+end
+
+local function normalize_gitlab_url(remote)
+  local rv = normalize_github_url(remote)
+  return rv
+end
+
+local function generate_github_url(remote_url, action, commit, relative, firstLine, lastLine)
+  local base = normalize_github_url(remote_url)
+  local lineRange = github_line_range(firstLine, lastLine)
+
+  if action == "blob" then
+    return string.format("%s/blob/%s/%s#%s", base, commit, relative, lineRange)
+  elseif action == "commit" then
+    return string.format("%s/commit/%s", base, commit)
+  elseif action == "compare" then
+    return string.format("%s/compare/%s...%s?expand=1", base, firstLine, lastLine)
+  end
+end
+
+local function generate_gitlab_url(remote_url, action, commit, relative, firstLine, lastLine)
+  local base = normalize_gitlab_url(remote_url)
+  local lineRange = gitlab_line_range(firstLine, lastLine)
+
+  if action == "blob" then
+    return string.format("%s/-/blob/%s/%s#%s", base, commit, relative, lineRange)
+  elseif action == "commit" then
+    return string.format("%s/-/commit/%s", base, commit)
+  elseif action == "compare" then
+    return string.format("%s/-/compare/%s...%s", base, firstLine, lastLine)
+  end
+end
+
 local function generate_url(remote_url, action, commit, relative, firstLine, lastLine)
-  local url = ""
-  local lineRange = ""
-
-  -- TODO: want to refactor
-  if action == "pull" then
-    local commit_hash = vim.fn.system(
-      "git blame -L " .. firstLine .. "," .. firstLine .. " " .. relative .. " -s | awk '{print $1}' | tr -d '\n'"
-    )
-    url = vim.fn.system("gh search prs " .. commit_hash .. " --json url | jq '.[].url'")
-
-    if url == "" then
-      print("No pull request containing '" .. commit_hash .. "' was found")
-      return url
-    end
-    return vim.fn.system("gh search prs " .. commit_hash .. " --json url | jq '.[].url'")
-  end
-
-  local function github_url(remote)
-    local rv = remote
-    local a_pattern = "^[^@]*@([^:/]*):?/?"
-    local replacement = "https://%1/"
-    rv = rv:gsub(a_pattern, replacement)
-
-    rv = rv:gsub("\n$", "")
-
-    local b_pattern = ".git" .. "$"
-    rv = rv:gsub(b_pattern, "")
-
-    return rv
-  end
-
   if is_github(remote_url) then
-    lineRange = github_line_range(firstLine, lastLine)
-    url = github_url(remote_url) .. "/" .. action .. "/" .. commit .. "/" .. relative .. "#" .. lineRange
+    return generate_github_url(remote_url, action, commit, relative, firstLine, lastLine)
+  elseif is_gitlab(remote_url) then
+    return generate_gitlab_url(remote_url, action, commit, relative, firstLine, lastLine)
   else
     error(
       "The remote: "
         .. remote_url
         .. " has not been recognized as belonging to "
-        .. "one of the supported git hosting environments: Github"
+        .. "one of the supported git hosting environments: Github or GitLab"
     )
   end
-
-  return url
 end
 
 function M.url(firstLine, lastLine, path, action, mode)
@@ -134,11 +148,9 @@ function M.url(firstLine, lastLine, path, action, mode)
 
   local commit, relative = M.get_git_info(path)
 
-  if mode == "" then
-    return generate_url(remote_url, action, commit, relative, firstLine, lastLine)
-  else
-    return generate_url(remote_url, action, mode, relative, firstLine, lastLine)
-  end
+  local target_commit = mode == "" and commit or mode
+
+  return generate_url(remote_url, action, target_commit, relative, firstLine, lastLine)
 end
 
 return M
